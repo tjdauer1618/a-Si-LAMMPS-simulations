@@ -1,0 +1,83 @@
+# deposition of silicon atoms on a substrate
+
+units		metal
+atom_style	atomic
+boundary        p p f
+
+lattice		fcc 1
+region          box block 0 30 0 30 0 500 # in Angstroms
+create_box      1 box
+
+variable	delta_t equal 0.001
+variable	timesteps_per_atom equal 100
+variable	growth_rate equal (1/45)*${delta_t}*${timesteps_per_atom}
+variable	dep_wall_rate equal 0.4 # 10*${growth_rate}
+variable	sub_height equal 10
+variable	slab_bottom equal ${sub_height}+25
+variable	slab_top equal ${sub_height}+35
+variable	harmonic_wall_velocity equal vdisplace(45+${sub_height},0.4) # vdisplace(45+${sub_height},10*${growth_rate})
+
+# Define a region that contains the atoms initially
+region		substrate block 0 30 0 30 0 ${sub_height}
+# create 1000 atoms randomly in the substrate region
+create_atoms	1 random 1000 587219 substrate
+group		substrate region substrate
+
+# Define a slab at the top of the simulation box
+region          slab block 0 30 0 30 ${slab_bottom} ${slab_top}
+region		film block 0 30 0 30 ${sub_height} INF
+# Group the atoms in this region
+group		addatoms region slab
+
+pair_style 	sw  # Stillinger-Weber potential
+pair_coeff 	* * si.sw Si
+mass 		* 28.0  # silicon molar mass
+
+neigh_modify	delay 0
+timestep	${delta_t} # in picoseconds
+
+fix		sub_temp_fix substrate nvt temp 300.0 300.0 $(100.0*dt)
+
+# Compute the temperature of the atoms in the substrate region
+compute		sub_temp substrate temp
+compute		addatoms_temp addatoms temp
+compute_modify	sub_temp dynamic/dof yes extra/dof 3
+compute_modify	addatoms_temp dynamic/dof yes extra/dof 3
+
+thermo_style	custom step atoms c_sub_temp c_addatoms_temp pe etotal
+# output thermodynamic info every 5000 timesteps
+thermo		10000
+thermo_modify	lost ignore
+
+minimize	1.0e-10 1.0e-10 10000 100000
+min_style	fire
+
+# Dumps 1 and 2, all atomic coordinates and velocities after the specified number of timesteps
+dump		1 substrate custom 10000 substrate_dump.txt id type x y z vx vy vz
+dump		2 addatoms custom 10000 addatoms_dump.txt id type x y z vx vy vz
+# Dump 3, images
+dump		3 all image 10000 image.*.jpg type type &
+		axes yes 0.8 0.02 view 80 -30 zoom 2
+dump_modify	3 pad 5
+
+restart 10000 restart1.txt restart2.txt
+
+# Run MD for just the substrate region for this many timesteps
+run		20000
+
+# Fix the substrate atoms with springs in the following computation
+fix		tether substrate spring/self 10.0
+
+# Harmonic wall above the film
+fix		harmonic_wall addatoms wall/harmonic zhi v_harmonic_wall_velocity 100.0 10.0 1.0
+
+fix		1 addatoms nve
+# Deposit atoms; specify the total number of atoms and number of timesteps between their insertion
+fix		2 addatoms deposit 10000 1 ${timesteps_per_atom} 12345 region slab near 1.0 &
+                vx -1.0 1.0  vy -1.0 1.0 vz -5.0 -5.0 rate ${dep_wall_rate}
+fix		3 addatoms wall/reflect zhi EDGE
+#fix		4 addatoms wall/reflect zlo EDGE
+# Zero the linear momentum of all the atoms after every timestep
+#fix		5 all momentum 1 linear 1 1 1
+
+run 2000000
